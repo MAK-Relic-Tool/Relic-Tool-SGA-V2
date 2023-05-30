@@ -9,7 +9,7 @@ from typing import BinaryIO, Dict, Tuple, cast
 from serialization_tools.structx import Struct
 from relic.sga.core import serialization as _s
 from relic.sga.core.definitions import StorageType
-from relic.sga.core.filesystem import registry
+from relic.sga.core.filesystem import registry, EssenceFS
 from relic.sga.core.protocols import StreamSerializer
 from relic.sga.core.serialization import (
     FileDef,
@@ -138,7 +138,7 @@ def assemble_meta(_: BinaryIO, header: MetaBlock, __: None) -> Dict[str, object]
 
 
 def disassemble_meta(
-    _: BinaryIO, metadata: Dict[str, object]
+        _: BinaryIO, metadata: Dict[str, object]
 ) -> Tuple[MetaBlock, None]:
     """Converts the archive's metadata dictionary into a MetaBlock class the Serializer can use."""
     meta = MetaBlock(
@@ -186,10 +186,10 @@ class EssenceFSSerializer(_s.EssenceFSSerializer[FileDef, MetaBlock, None]):
     """
 
     def __init__(
-        self,
-        toc_serializer: StreamSerializer[TocBlock],
-        meta_serializer: StreamSerializer[MetaBlock],
-        toc_serialization_info: TOCSerializationInfo[FileDef],
+            self,
+            toc_serializer: StreamSerializer[TocBlock],
+            meta_serializer: StreamSerializer[MetaBlock],
+            toc_serialization_info: TOCSerializationInfo[FileDef],
     ):
         super().__init__(
             version=version,
@@ -212,8 +212,11 @@ _folder_serializer = _s.FolderDefSerializer(_folder_layout)
 _drive_layout = Struct("<64s 64s 5H")
 _drive_serializer = _s.DriveDefSerializer(_drive_layout)
 
-_file_layout = Struct("<5I")
-_file_serializer = FileDefSerializer(_file_layout)
+_dow_file_layout = Struct("<5I")  # For DoW
+_dow_file_serializer = FileDefSerializer(_dow_file_layout)
+
+_ic_file_layout = Struct("<I B 3I")  # For IC
+_ic_file_serializer = FileDefSerializer(_ic_file_layout)
 
 _toc_layout = Struct("<IH IH IH IH")
 _toc_header_serializer = _s.TocHeaderSerializer(_toc_layout)
@@ -221,17 +224,46 @@ _toc_header_serializer = _s.TocHeaderSerializer(_toc_layout)
 _meta_header_layout = Struct("<16s 128s 16s 2I")
 _meta_header_serializer = ArchiveHeaderSerializer(_meta_header_layout)
 
-essence_fs_serializer = EssenceFSSerializer(
+_dow_essence_fs_serializer = EssenceFSSerializer(
     meta_serializer=_meta_header_serializer,
     toc_serializer=_toc_header_serializer,
     toc_serialization_info=TOCSerializationInfo(
-        file=_file_serializer,
+        file=_dow_file_serializer,
         drive=_drive_serializer,
         folder=_folder_serializer,
         name_toc_is_count=True,
     ),
 )
 
+_ic_essence_fs_serializer = EssenceFSSerializer(
+    meta_serializer=_meta_header_serializer,
+    toc_serializer=_toc_header_serializer,
+    toc_serialization_info=TOCSerializationInfo(
+        file=_ic_file_serializer,
+        drive=_drive_serializer,
+        folder=_folder_serializer,
+        name_toc_is_count=True,
+    ),
+)
+
+
+class V2EssenceFSSerializer(EssenceFSSerializer):
+    def __init__(self, primary, fallback):
+        super().__init__(None, None, None)
+        self.primary = primary
+        self.fallback = fallback
+
+    def read(self, stream: BinaryIO) -> EssenceFS:
+        try:
+            return self.primary.read(stream)
+        except:
+            return self.fallback.read(stream)
+
+    def write(self, stream: BinaryIO, essence_fs: EssenceFS) -> int:
+        raise NotImplementedError
+
+
+essence_fs_serializer = V2EssenceFSSerializer(_dow_essence_fs_serializer, _ic_essence_fs_serializer)
 registry.auto_register(essence_fs_serializer)
 
 __all__ = [
